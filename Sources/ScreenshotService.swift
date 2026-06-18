@@ -219,12 +219,21 @@ final class CaptureOverlayView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        if let screenImage {
+            NSImage(cgImage: screenImage, size: bounds.size).draw(in: bounds)
+        } else {
+            NSColor.black.setFill()
+            bounds.fill()
+        }
+
         NSColor.black.withAlphaComponent(0.42).setFill()
         bounds.fill()
 
         if let rect = selectionRect {
-            NSColor.clear.setFill()
-            rect.fill(using: .clear)
+            if let cropped = cropSelectionImage(for: rect) {
+                NSGraphicsContext.current?.imageInterpolation = .none
+                NSImage(cgImage: cropped, size: rect.size).draw(in: rect)
+            }
 
             NSColor.systemRed.setStroke()
             let path = NSBezierPath(rect: rect)
@@ -333,6 +342,21 @@ final class CaptureOverlayView: NSView {
         ).integral
 
         return screenImage.cropping(to: sampleRect)
+    }
+
+    private func cropSelectionImage(for rect: CGRect) -> CGImage? {
+        guard let screenImage else { return nil }
+
+        let scaleX = CGFloat(screenImage.width) / bounds.width
+        let scaleY = CGFloat(screenImage.height) / bounds.height
+        let cropRect = CGRect(
+            x: rect.minX * scaleX,
+            y: (bounds.height - rect.maxY) * scaleY,
+            width: rect.width * scaleX,
+            height: rect.height * scaleY
+        ).integral
+
+        return screenImage.cropping(to: cropRect)
     }
 
     private func magnifierBox(at point: CGPoint) -> CGRect {
