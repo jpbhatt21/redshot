@@ -99,7 +99,9 @@ final class CaptureOverlayController {
                 self?.finish(result)
             }
             window.contentView = view
-            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+            window.makeKey()
+            window.makeFirstResponder(view)
             return window
         }
         NSCursor.crosshair.set()
@@ -139,6 +141,9 @@ final class CaptureWindow: NSWindow {
     }
 
     override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+    override var acceptsFirstResponder: Bool { true }
+
 }
 
 final class CaptureOverlayView: NSView {
@@ -164,6 +169,10 @@ final class CaptureOverlayView: NSView {
     }
 
     override var acceptsFirstResponder: Bool { true }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
 
     override func viewDidMoveToWindow() {
         window?.makeFirstResponder(self)

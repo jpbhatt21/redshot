@@ -33,16 +33,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func installHotKey() {
         hotKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            guard event.charactersIgnoringModifiers?.lowercased() == "s",
-                  flags.contains(.shift),
+            guard flags.contains(.shift),
                   flags.contains(.option),
                   !flags.contains(.command),
                   !flags.contains(.control) else {
                 return
             }
 
+            let key = event.charactersIgnoringModifiers?.lowercased()
             Task { @MainActor in
-                self?.screenshotService.startCapture()
+                switch key {
+                case "s":
+                    NSApp.activate(ignoringOtherApps: true)
+                    self?.screenshotService.startCapture()
+                case "a":
+                    self?.screenshotService.captureFocusedWindow()
+                case "d":
+                    self?.screenshotService.captureLastRegion()
+                case "f":
+                    self?.screenshotService.captureFullScreen()
+                default:
+                    break
+                }
             }
         }
     }
