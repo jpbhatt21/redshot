@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 import UniformTypeIdentifiers
 
 @MainActor
@@ -46,9 +45,13 @@ final class ScreenshotService: ObservableObject {
             Task { @MainActor in
                 self?.controller = nil
                 switch result {
-                case .success(let rect):
+                case .success(let rect, let image):
                     self?.storeLastRegion(rect)
-                    self?.capture(rect: rect)
+                    if let image {
+                        self?.handle(image: image, suggestedSize: rect.size)
+                    } else {
+                        self?.capture(rect: rect)
+                    }
                 case .cancelled:
                     self?.lastMessage = "Capture cancelled"
                 }
@@ -137,6 +140,7 @@ final class ScreenshotService: ObservableObject {
                 actions.append("copied")
             }
             lastMessage = actions.isEmpty ? "Capture ready" : "Capture \(actions.joined(separator: " and "))"
+            showSuccessEffect()
         } catch {
             lastMessage = error.localizedDescription
         }
@@ -214,7 +218,7 @@ final class ScreenshotService: ObservableObject {
 
     private func imageWithCursor(base: CGImage, size: CGSize) -> CGImage? {
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }),
-              let cursorImage = NSCursor.current.image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+              NSCursor.current.image.cgImage(forProposedRect: nil, context: nil, hints: nil) != nil else {
             return nil
         }
 
@@ -243,47 +247,62 @@ final class ScreenshotService: ObservableObject {
     }
 
     private func showActionWindow(data: Data, image: CGImage) {
-        let view = CaptureActionView(
-            save: { [weak self] in self?.performManualSave(data: data) },
-            copy: { [weak self] in self?.performManualCopy(data: data, image: image) },
-            saveAndCopy: { [weak self] in
-                self?.performManualSave(data: data)
-                self?.performManualCopy(data: data, image: image)
-            },
-            saveCustom: { [weak self] in self?.performManualSaveCustom(data: data) },
-            trash: { [weak self] in self?.closeActionWindow(message: "Capture discarded") }
-        )
+        NSApp.activate(ignoringOtherApps: true)
 
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 300, height: 190),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "Redshot"
-        window.contentView = NSHostingView(rootView: view)
-        window.center()
-        window.level = .floating
-        window.makeKeyAndOrderFront(nil)
-        actionWindow = window
+        let alert = NSAlert()
+        alert.messageText = "Capture ready"
+        alert.informativeText = "Choose what to do with this screenshot."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Save to location")
+        alert.addButton(withTitle: "Copy to clipboard")
+        alert.addButton(withTitle: "Save and copy")
+        alert.addButton(withTitle: "Save to custom folder")
+        alert.addButton(withTitle: "Move to trash")
+
+        switch alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue {
+        case 0:
+            performManualSave(data: data)
+        case 1:
+            performManualCopy(data: data, image: image)
+        case 2:
+            performManualSaveAndCopy(data: data, image: image)
+        case 3:
+            performManualSaveCustom(data: data)
+        default:
+            closeActionWindow(message: "Capture discarded")
+        }
     }
 
-    private func performManualSave(data: Data) {
+    fileprivate func performManualSave(data: Data) {
         do {
             let url = try save(data: data, to: outputFolderURL())
             lastCaptureURL = url
             closeActionWindow(message: "Saved: \(url.lastPathComponent)")
+            showSuccessEffect()
         } catch {
             lastMessage = error.localizedDescription
         }
     }
 
-    private func performManualCopy(data: Data, image: CGImage) {
+    fileprivate func performManualCopy(data: Data, image: CGImage) {
         copyToClipboard(data: data, image: NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height)))
         closeActionWindow(message: "Copied")
+        showSuccessEffect()
     }
 
-    private func performManualSaveCustom(data: Data) {
+    fileprivate func performManualSaveAndCopy(data: Data, image: CGImage) {
+        do {
+            let url = try save(data: data, to: outputFolderURL())
+            lastCaptureURL = url
+            copyToClipboard(data: data, image: NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height)))
+            closeActionWindow(message: "Saved and copied: \(url.lastPathComponent)")
+            showSuccessEffect()
+        } catch {
+            lastMessage = error.localizedDescription
+        }
+    }
+
+    fileprivate func performManualSaveCustom(data: Data) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -293,16 +312,21 @@ final class ScreenshotService: ObservableObject {
                 let url = try save(data: data, to: folder)
                 lastCaptureURL = url
                 closeActionWindow(message: "Saved: \(url.lastPathComponent)")
+                showSuccessEffect()
             } catch {
                 lastMessage = error.localizedDescription
             }
         }
     }
 
-    private func closeActionWindow(message: String) {
+    fileprivate func closeActionWindow(message: String) {
         actionWindow?.close()
         actionWindow = nil
         lastMessage = message
+    }
+
+    private func showSuccessEffect() {
+        SuccessEffectWindow.show()
     }
 
     private enum Keys {
@@ -365,29 +389,56 @@ enum RedshotImageFormat: String, CaseIterable, Identifiable {
     }
 }
 
-struct CaptureActionView: View {
-    let save: () -> Void
-    let copy: () -> Void
-    let saveAndCopy: () -> Void
-    let saveCustom: () -> Void
-    let trash: () -> Void
+@MainActor
+private final class SuccessEffectWindow {
+    private static var activeWindows: [NSWindow] = []
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Capture ready").font(.headline)
-            Button("Save to location", action: save)
-            Button("Copy to clipboard", action: copy)
-            Button("Save and copy", action: saveAndCopy)
-            Button("Save to custom folder", action: saveCustom)
-            Button("Move to trash", role: .destructive, action: trash)
+    static func show() {
+        let screens = NSScreen.screens.isEmpty ? [NSScreen.main].compactMap { $0 } : NSScreen.screens
+        let windows = screens.map { screen -> NSWindow in
+            let window = NSWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.hasShadow = false
+            window.level = .screenSaver
+            window.ignoresMouseEvents = true
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+            window.alphaValue = 0
+            window.contentView = SuccessFlashView(frame: NSRect(origin: .zero, size: screen.frame.size))
+            window.orderFrontRegardless()
+            return window
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        activeWindows.append(contentsOf: windows)
+
+        for window in windows {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.05
+                window.animator().alphaValue = 0.22
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.07) {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.12
+                    window.animator().alphaValue = 0
+                } completionHandler: {
+                    Task { @MainActor in
+                        window.orderOut(nil)
+                        activeWindows.removeAll { $0 === window }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private final class SuccessFlashView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.white.withAlphaComponent(0.28).setFill()
+        bounds.fill()
     }
 }
 
 enum CaptureResult {
-    case success(CGRect)
+    case success(CGRect, CGImage?)
     case cancelled
 }
 
@@ -511,7 +562,7 @@ final class CaptureOverlayView: NSView {
             return
         }
 
-        completion(.success(toGlobal(rect)))
+        completion(.success(toGlobal(rect), cropSelectionImage(for: rect)))
     }
 
     override func keyDown(with event: NSEvent) {
